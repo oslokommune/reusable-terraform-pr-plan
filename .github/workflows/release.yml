@@ -1,0 +1,16 @@
+name: Release
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release-please:
+    name: Run release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Run Release Please
+        uses: google-github-actions/release-please-action@e4dc86ba9405554aeba3c6bb2d169500e7d3b4ee # v4.1.1

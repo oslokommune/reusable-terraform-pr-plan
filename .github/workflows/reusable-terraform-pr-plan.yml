@@ -1,0 +1,493 @@
+name: "Terraform PR plan"
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: "Path to CI/CD configuration file"
+        type: string
+        default: ".gp.cicd.json"
+    secrets:
+      ssh-private-key:
+        description: "A deploy key that grants read access to Terraform modules in golden-path-iac"
+        required: true
+    outputs:
+      success:
+        description: "Whether all Terraform plans succeeded"
+        value: ${{ jobs.summarize.outputs.success }}
+      has-changes:
+        description: "Whether any stack has changes"
+        value: ${{ jobs.summarize.outputs.has-changes }}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  TZ: "Europe/Oslo"
+
+jobs:
+  recreate-existing-terraform-plan:
+    name: Recreate plans
+    if: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '[x] Check this box to recreate plans <!--terraform-pr-recreate-->') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    concurrency:
+      group: ${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Trigger rerun of plan job
+        env:
+          PR_COMMENT_BODY: ${{ github.event.comment.body }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="$(echo "$PR_COMMENT_BODY" | sed -n 's/<!--terraform-pr-github-run-id:\(.*\)-->/\1/p' | tr -d '\n\r' | xargs)"
+          if [ "$run_id" == "" ]; then
+            echo "Failed to find GitHub Actions workflow run id associated with comment" >&2
+            exit 1
+          fi
+          running_jobs="$(gh run view --repo "$GITHUB_REPOSITORY" "$run_id" --json jobs --jq '.jobs[] | select(.status == "in_progress" or .status == "queued") | .name')"
+          # We only try to rerun the workflow if it is not already running
+          if [ "$running_jobs" == "" ]; then
+            gh run rerun --repo "$GITHUB_REPOSITORY" "$run_id"
+          fi
+
+  determine-changed-stacks:
+    if: ${{ github.event_name == 'pull_request' }}
+    name: Determine changed stacks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      all-stacks: ${{ steps.determine.outputs.all-stacks }}
+      all-dev-stacks: ${{ steps.determine.outputs.all-dev-stacks }}
+      all-prod-stacks: ${{ steps.determine.outputs.all-prod-stacks }}
+    steps:
+      # determine-stacks requires code to be checked out in order to
+      # find changed files
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Determine changed stacks
+        id: determine
+        uses: oslokommune/composite-actions/determine-stacks@c4abc960b37045adb14eee42952a345607e5d39d # determine-stacks-v1.1.1
+
+  create-summary-comment:
+    if: ${{ needs.determine-changed-stacks.result == 'success' && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0] }}
+    name: Create summary comment
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    needs:
+      - determine-changed-stacks
+    steps:
+      - name: Find Terraform summary comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!--terraform-pr-summary-->"
+
+      - name: Prepare body
+        id: body
+        env:
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          timestamp=$(date +"%a %d. %b %T")
+          short_sha="$(echo "$COMMIT_SHA" | cut -c-8)"
+          cat <<EOF > /tmp/body.md
+          ## Summary
+          🔄 Currently planning ...
+          <!--terraform-pr-summary-->
+          <!--terraform-pr-github-run-id:$GITHUB_RUN_ID-->
+
+          ---
+
+          - [ ] Check this box to recreate plans <!--terraform-pr-recreate-->
+
+          _Time: ${timestamp}, commit: ${short_sha}_
+          EOF
+          echo "file=/tmp/body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update Terraform plan comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body-file: ${{ steps.body.outputs.file }}
+          edit-mode: replace
+
+      - name: Cleanup stale stack plan comments
+        env:
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          STACKS: ${{ needs.determine-changed-stacks.outputs.all-stacks }}
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: false
+        run: |
+          # Finds all comments on current PR
+          comments="$(gh api "/repos/$GITHUB_REPOSITORY/issues/$PULL_REQUEST_NUMBER/comments")"
+          # Loop over and delete bot comments that mention stacks that are no longer a part of the PR
+          echo "$comments" | jq -r --argjson stacks "$STACKS" \
+            '.[]
+              | select(.user.login == "github-actions[bot]" and (.body | contains("<!--terraform-pr-stack-plan:")))
+              | . as $comment
+              | ($comment.body | match("<!--terraform-pr-stack-plan:([^>]+)-->").captures[0].string) as $stack
+              | select($stacks | index($stack) == null)
+              | .id' \
+          | while read -r comment_id; do
+            echo "Deleting stale stack plan comment: $comment_id"
+            gh api -X DELETE "/repos/$GITHUB_REPOSITORY/issues/comments/$comment_id"
+          done
+
+  plan:
+    if: ${{ needs.determine-changed-stacks.result == 'success' && needs.create-summary-comment.result == 'success' && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0] }}
+    name: Process '${{ matrix.stack }}'
+    needs:
+      - determine-changed-stacks
+      - create-summary-comment
+    env:
+      TF_PLUGIN_CACHE_DIR: /tmp/.terraform-cache
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.determine-changed-stacks.outputs.all-stacks) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Store config as output
+        id: config
+        env:
+          CONFIG_FILE: ${{ inputs.config-file }}
+        run: |
+          config="$(jq -e -c . "$CONFIG_FILE")"
+          echo "$config"
+          echo "result=$config" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          aws-region: >-
+            ${{
+              contains(fromJSON(needs.determine-changed-stacks.outputs.all-prod-stacks), matrix.stack)
+              && fromJSON(steps.config.outputs.result).prod.defaultRegion
+              || fromJSON(steps.config.outputs.result).dev.defaultRegion
+            }}
+          role-to-assume: >-
+            ${{
+              contains(fromJSON(needs.determine-changed-stacks.outputs.all-prod-stacks), matrix.stack)
+              && fromJSON(steps.config.outputs.result).prod.planRoleArn
+              || fromJSON(steps.config.outputs.result).dev.planRoleArn
+            }}
+
+      - name: Load golden-path-iac SSH deploy key
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.ssh-private-key }}
+
+      - name: Extract Terraform version
+        id: v
+        working-directory: ${{ matrix.stack }}
+        run: ls -lah; echo "TERRAFORM_VERSION=$(grep required_version *.tf | sed -E 's/[^"]+"([^"]+)"+/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ steps.v.outputs.TERRAFORM_VERSION }}
+
+      - name: Create directory for Terraform cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: Configure Terraform cache
+        id: cache-tf
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: ${{ runner.os }}-terraform-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.stack)) }}
+
+      - name: Initialize Terraform stack
+        id: init
+        working-directory: ${{ matrix.stack }}
+        continue-on-error: true
+        run: |
+          terraform init -no-color -input=false
+
+      - name: Create a Terraform plan
+        id: plan
+        if: steps.init.outcome == 'success'
+        working-directory: ${{ matrix.stack }}
+        continue-on-error: true
+        run: |
+          terraform plan -lock=false -no-color -input=false -no-color -detailed-exitcode
+
+      - name: Create Terraform plan summary file
+        id: plan-summary
+        env:
+          WORKFLOW_RUN_URL: ${{ github.server_url}}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          TF_SUMMARY: >-
+            ${{
+              format('{0}{1}', steps.plan.outputs.stdout || '', steps.plan.outputs.stderr || '')
+              || format('{0}{1}', steps.init.outputs.stdout || '', steps.init.outputs.stderr || '')
+            }}
+          SUCCESS: ${{ steps.plan.outcome == 'success' }}
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+          STACK: ${{ matrix.stack }}
+          STACK_POSITION: ${{ steps.stack-meta.outputs.position }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        working-directory: ${{ matrix.stack }}
+        run: |
+          timestamp="$(date +"%a %d. %b %T")"
+          short_sha="$(echo "$COMMIT_SHA" | cut -c-8)"
+          plan_summary=""
+          # Extract plan summary if successful
+          if [ "$SUCCESS" = "true" ]; then
+            code_block_syntax="terraform"
+            emoji="🟩"
+            toggle_text="Show plan"
+            if ! plan_summary="$(echo "$TF_SUMMARY" | grep -E "(Plan: (.*[0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy)|No changes\. Your infrastructure matches the configuration)" | sed -E 's/Plan: (.*)/\1/; s/(No changes)\..*/\1/')"; then
+              plan_summary=""
+            fi
+            if [ "$plan_summary" != "" ]; then
+              if [ "$plan_summary" != "No changes" ]; then
+                emoji="🟧"
+              fi
+              status="$emoji Terraform plan succeeded: $plan_summary"
+            else
+              # If we couldn't parse the plan summary, show orange to indicate potential changes.
+              # This can happen with output-only changes or other edge cases not matched by the grep pattern.
+              emoji="🟧"
+              status="$emoji Terraform plan succeeded"
+            fi
+          else
+            code_block_syntax=""
+            toggle_text="Show error"
+            status="❌ Terraform plan failed"
+          fi
+
+          # Check if truncation needed
+          needs_truncation="false"
+          workflow_run_url="$WORKFLOW_RUN_URL"
+          # Max comment length is 65536 characters. We truncate if Terraform output
+          # is larger than 63536 characters - leaving 2000 characters for other comment content
+          if [ "$( echo "$TF_SUMMARY" | wc -c)" -gt 63536 ]; then
+            needs_truncation="true"
+
+            if [ "$PLAN_OUTCOME" != "skipped" ]; then
+              # We link directly to the plan step if plan was truncated
+              workflow_run_url="$workflow_run_url#step:11:0"
+            else
+              # If plan didn't run and truncation is needed, that means
+              # output from init step was too large, so we link to init step
+              workflow_run_url="$workflow_run_url#step:10:0"
+            fi
+          fi
+
+          # Build the details section (truncation message or full output)
+          if [ "$needs_truncation" = "true" ]; then
+            details="> [!NOTE]
+          > Output was too large for comment. See workflow logs 🔎"
+          else
+            details="<details><summary>$toggle_text</summary>
+
+          \`\`\`$code_block_syntax
+          $TF_SUMMARY
+          \`\`\`
+          </details>
+          "
+          fi
+
+          last_two_dirs=$(echo "$STACK" | awk -F/ '{ if (NF>=2) {print $(NF-1)"/"$NF} else {print $0} }')
+          heading="## Terraform plan: \`$last_two_dirs\`"
+
+          cat << EOF > details.md
+          $heading
+          <!--terraform-pr-stack-plan:$STACK-->
+          <!--terraform-pr-github-run-id:$GITHUB_RUN_ID-->
+
+          Running Terraform in \`$STACK\`.
+
+          **$status**
+
+          $details
+
+          ---
+
+          🔎 _[View workflow logs]($workflow_run_url)_
+
+          _Time: ${timestamp}, commit: ${short_sha}_
+          EOF
+
+          echo "result=$plan_summary" >> "$GITHUB_OUTPUT"
+
+      - name: Find Terraform plan comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!--terraform-pr-stack-plan:${{ matrix.stack }}-->"
+
+      - name: Create or update Terraform plan comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        id: c
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body-path: ${{ matrix.stack }}/details.md
+          edit-mode: replace
+
+      - name: Fail job if terraform plan failed
+        if: steps.plan.outcome != 'success'
+        run: |
+          exit 1
+
+      - name: Create summary file
+        if: ${{ always() }}
+        env:
+          STACK: ${{ matrix.stack }}
+          JOB_STATUS: ${{ job.status }}
+          HAS_CHANGES: ${{ steps.plan-summary.outputs.result != 'No changes' }}
+          SUMMARY: ${{ steps.plan-summary.outputs.result }}
+          COMMENT_URL: ${{ steps.c.outputs.comment-id != '' && format('{0}/{1}/pull/{2}#issuecomment-{3}', github.server_url, github.repository, github.event.pull_request.number, steps.c.outputs.comment-id) || '' }}
+        id: job-summary
+        run: |
+          summary="$(jq --compact-output --null-input \
+            --arg stack "$STACK" \
+            --argjson has_changes "$HAS_CHANGES" \
+            --arg job_status "$JOB_STATUS" \
+            --arg summary "$SUMMARY" \
+            --arg commentUrl "$COMMENT_URL" \
+            '{stack: $stack, hasChanges: $has_changes, jobStatus: $job_status, summary: $summary, commentUrl: $commentUrl}'
+          )"
+
+          artifact_name="summary-$(echo "$STACK" | sed 's/[^a-zA-Z0-9-]/-/g' | sed 's/--/-/g')"
+          job_summary_file="/tmp/$artifact_name.json"
+          echo "$summary" > "$job_summary_file"
+          echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "file=$job_summary_file" >> "$GITHUB_OUTPUT"
+
+      - name: Store job summary as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: ${{ steps.job-summary.outputs.artifact-name }}
+          path: ${{ steps.job-summary.outputs.file }}
+          retention-days: 1
+
+  summarize:
+    name: Update summary comment
+    needs:
+      - determine-changed-stacks
+      - plan
+      - create-summary-comment
+    if: ${{ always() && needs.determine-changed-stacks.result == 'success' && needs.create-summary-comment.result == 'success' }}
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-24.04
+    outputs:
+      success: ${{ steps.summary.outputs.success }}
+      has-changes: ${{ steps.summary.outputs.has-changes }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: summaries
+          pattern: summary-*
+          merge-multiple: true
+
+      - name: Check if plans contain changes
+        env:
+          STACKS: ${{ needs.determine-changed-stacks.outputs.all-stacks }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        id: summary
+        run: |
+          timestamp=$(date +"%a %d. %b %T")
+          short_sha="$(echo "$COMMIT_SHA" | cut -c-8)"
+          stack_total=$(echo "${STACKS:-[]}" | jq 'length')
+          stack_word="stacks"
+          if [ "$stack_total" -eq 1 ]; then
+            stack_word="stack"
+          fi
+          summary="## Summary (${stack_total} $stack_word)"
+
+          create_table="false"
+          for f in summaries/*.json; do
+            [ -e "$f" ] && create_table="true" && break
+          done
+
+          if [ "$create_table" = "true" ]; then
+            summary="$(printf "%s\n%s\n" "$summary" "| Status | Stack | Details |")"
+            summary="$(printf "%s\n%s\n" "$summary" "|:---:|------------|------------|")"
+          fi
+
+          success="true"
+          has_changes="false"
+
+          for summary_file in summaries/*.json; do
+            emoji="❌"
+            status="failed"
+            stack="$(jq -r -e '.stack' "$summary_file")"
+            comment_url="$(jq -r -e '.commentUrl' "$summary_file")"
+            plan_summary="$(jq -r -e '.summary' "$summary_file")"
+
+            if "$(jq -e '.jobStatus == "success"' "$summary_file")"; then
+              emoji="🟩"
+              if "$(jq -e '.hasChanges' "$summary_file")"; then
+                emoji="🟧"
+                has_changes="true"
+              fi
+            else
+              plan_summary="Plan failed"
+              success="false"
+            fi
+
+            if [ "$comment_url" != "" ]; then
+              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "[\`$stack\`]($comment_url)" "$plan_summary")"
+            else
+              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "\`$stack\`" "$plan_summary")"
+            fi
+          done
+
+          cat <<EOF > /tmp/summary.md
+          $summary
+          <!--terraform-pr-github-run-id:$GITHUB_RUN_ID-->
+          <!--terraform-pr-summary-->
+
+          ---
+
+          - [ ] Check this box to recreate plans <!--terraform-pr-recreate-->
+
+          _Time: ${timestamp}, commit: ${short_sha}_
+          EOF
+
+          echo "file=/tmp/summary.md" >> "$GITHUB_OUTPUT"
+          echo "success=$success" >> "$GITHUB_OUTPUT"
+          echo "has-changes=$has_changes" >> "$GITHUB_OUTPUT"
+
+      - name: Find Terraform summary comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!--terraform-pr-summary-->"
+
+      - name: Create or update Terraform plan comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body-file: ${{ steps.summary.outputs.file }}
+          edit-mode: replace
