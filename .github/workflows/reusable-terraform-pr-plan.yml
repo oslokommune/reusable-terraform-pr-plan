@@ -28,6 +28,9 @@ on:
       has-changes:
         description: "Whether any stack has changes"
         value: ${{ jobs.summarize.outputs.has-changes }}
+      stacks:
+        description: "JSON array of all stacks that were planned"
+        value: ${{ jobs.determine-changed-stacks.outputs.all-stacks }}
 
 defaults:
   run:
