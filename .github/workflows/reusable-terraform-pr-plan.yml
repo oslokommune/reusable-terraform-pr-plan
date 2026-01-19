@@ -7,6 +7,11 @@ on:
         description: "Path to CI/CD configuration file"
         type: string
         default: ".gp.cicd.json"
+      selected-stacks:
+        type: string
+        default: ""
+        description: 'Comma/newline-delimited list of stack patterns to plan (e.g., "stacks/dev/{dns,iam}","stacks/dev/app-hello,stacks/prod/app-hello"). By default, only stacks with changed files are planned. Set "selected-stacks" to override this behavior.'
+        required: false
     secrets:
       ssh-private-key:
         description: "A deploy key that grants read access to Terraform modules in golden-path-iac"
@@ -18,6 +23,9 @@ on:
       has-changes:
         description: "Whether any stack has changes"
         value: ${{ jobs.summarize.outputs.has-changes }}
+      stacks:
+        description: "JSON array of all stacks that were planned"
+        value: ${{ jobs.determine-changed-stacks.outputs.all-stacks }}
 
 defaults:
   run:
@@ -73,6 +81,8 @@ jobs:
       - name: Determine changed stacks
         id: determine
         uses: oslokommune/composite-actions/determine-stacks@c4abc960b37045adb14eee42952a345607e5d39d # determine-stacks-v1.1.1
+        with:
+          selected-stacks: ${{ inputs.selected-stacks }}
 
   create-summary-comment:
     if: ${{ needs.determine-changed-stacks.result == 'success' && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0] }}
