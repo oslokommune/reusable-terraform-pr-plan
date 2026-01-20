@@ -24,10 +24,10 @@ on:
     outputs:
       success:
         description: "Whether all Terraform plans succeeded"
-        value: ${{ jobs.summarize.outputs.success }}
+        value: ${{ jobs.summarize.outputs.success == 'true' }}
       has-changes:
-        description: "Whether any stack has changes"
-        value: ${{ jobs.summarize.outputs.has-changes }}
+        description: "Whether any stack had changes"
+        value: ${{ jobs.summarize.outputs.has-changes == 'true' }}
       stacks:
         description: "JSON array of all stacks that were planned"
         value: ${{ jobs.determine-changed-stacks.outputs.all-stacks }}
@@ -42,7 +42,11 @@ env:
 jobs:
   recreate-existing-terraform-plan:
     name: Recreate plans
-    if: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '[x] Check this box to recreate plans <!--terraform-pr-recreate-->') }}
+    if: >-
+      ${{
+        github.event_name == 'issue_comment'
+        && contains(github.event.comment.body, '[x] Check this box to recreate plans <!--terraform-pr-recreate-->')
+      }}
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -67,8 +71,7 @@ jobs:
           fi
 
   determine-changed-stacks:
-    if: ${{ github.event_name == 'pull_request' }}
-    name: Determine changed stacks
+    name: Determine stacks
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -91,7 +94,12 @@ jobs:
           ignored-stacks: ${{ inputs.ignored-stacks }}
 
   create-summary-comment:
-    if: ${{ needs.determine-changed-stacks.result == 'success' && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0] }}
+    if: >-
+      ${{
+        github.event_name == 'pull_request'
+        && needs.determine-changed-stacks.result == 'success'
+        && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0]
+      }}
     name: Create summary comment
     runs-on: ubuntu-24.04
     permissions:
@@ -160,8 +168,16 @@ jobs:
           done
 
   plan:
-    if: ${{ needs.determine-changed-stacks.result == 'success' && needs.create-summary-comment.result == 'success' && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0] }}
-    name: Process '${{ matrix.stack }}'
+    if: >-
+      ${{
+        always()
+        && needs.determine-changed-stacks.result == 'success'
+        && (
+          needs.create-summary-comment.result == 'success'
+          || needs.create-summary-comment.result == 'skipped'
+        ) && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0]
+      }}
+    name: Plan '${{ matrix.stack }}'
     needs:
       - determine-changed-stacks
       - create-summary-comment
@@ -347,6 +363,7 @@ jobs:
           echo "result=$plan_summary" >> "$GITHUB_OUTPUT"
 
       - name: Find Terraform plan comment
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: fc
         with:
@@ -355,6 +372,7 @@ jobs:
           body-includes: "<!--terraform-pr-stack-plan:${{ matrix.stack }}-->"
 
       - name: Create or update Terraform plan comment
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
         id: c
         with:
@@ -375,7 +393,13 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           HAS_CHANGES: ${{ steps.plan-summary.outputs.result != 'No changes' }}
           SUMMARY: ${{ steps.plan-summary.outputs.result }}
-          COMMENT_URL: ${{ steps.c.outputs.comment-id != '' && format('{0}/{1}/pull/{2}#issuecomment-{3}', github.server_url, github.repository, github.event.pull_request.number, steps.c.outputs.comment-id) || '' }}
+          # Prefer comment URL for PRs, fall back to job URL
+          PLAN_URL: >-
+            ${{
+              steps.c.outputs.comment-id != ''
+              && format('{0}/{1}/pull/{2}#issuecomment-{3}', github.server_url, github.repository, github.event.pull_request.number, steps.c.outputs.comment-id)
+              || format('{0}/{1}/actions/runs/{2}/job/{3}', github.server_url, github.repository, github.run_id, job.check_run_id)
+            }}
         id: job-summary
         run: |
           summary="$(jq --compact-output --null-input \
@@ -383,8 +407,8 @@ jobs:
             --argjson has_changes "$HAS_CHANGES" \
             --arg job_status "$JOB_STATUS" \
             --arg summary "$SUMMARY" \
-            --arg commentUrl "$COMMENT_URL" \
-            '{stack: $stack, hasChanges: $has_changes, jobStatus: $job_status, summary: $summary, commentUrl: $commentUrl}'
+            --arg planUrl "$PLAN_URL" \
+            '{stack: $stack, hasChanges: $has_changes, jobStatus: $job_status, summary: $summary, planUrl: $planUrl}'
           )"
 
           artifact_name="summary-$(echo "$STACK" | sed 's/[^a-zA-Z0-9-]/-/g' | sed 's/--/-/g')"
@@ -402,18 +426,18 @@ jobs:
           retention-days: 1
 
   summarize:
-    name: Update summary comment
+    name: Summarize
     needs:
       - determine-changed-stacks
       - plan
       - create-summary-comment
-    if: ${{ always() && needs.determine-changed-stacks.result == 'success' && needs.create-summary-comment.result == 'success' }}
+    if: ${{ always() && needs.determine-changed-stacks.result == 'success' }}
     permissions:
       pull-requests: write
     runs-on: ubuntu-24.04
     outputs:
-      success: ${{ steps.summary.outputs.success }}
-      has-changes: ${{ steps.summary.outputs.has-changes }}
+      success: ${{ steps.summary.outputs.success == 'true' }}
+      has-changes: ${{ steps.summary.outputs.has-changes == 'true' }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -422,11 +446,12 @@ jobs:
           pattern: summary-*
           merge-multiple: true
 
-      - name: Check if plans contain changes
+      - name: Build summary
         env:
           STACKS: ${{ needs.determine-changed-stacks.outputs.all-stacks }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         id: summary
         run: |
           timestamp=$(date +"%a %d. %b %T")
@@ -453,9 +478,8 @@ jobs:
 
           for summary_file in summaries/*.json; do
             emoji="❌"
-            status="failed"
             stack="$(jq -r -e '.stack' "$summary_file")"
-            comment_url="$(jq -r -e '.commentUrl' "$summary_file")"
+            plan_url="$(jq -r '.planUrl' "$summary_file")"
             plan_summary="$(jq -r -e '.summary' "$summary_file")"
 
             if "$(jq -e '.jobStatus == "success"' "$summary_file")"; then
@@ -469,14 +493,16 @@ jobs:
               success="false"
             fi
 
-            if [ "$comment_url" != "" ]; then
-              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "[\`$stack\`]($comment_url)" "$plan_summary")"
+            if [ "$plan_url" != "" ]; then
+              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "[\`$stack\`]($plan_url)" "$plan_summary")"
             else
               summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "\`$stack\`" "$plan_summary")"
             fi
           done
 
-          cat <<EOF > /tmp/summary.md
+          # Build PR-specific content
+          if [ "$IS_PULL_REQUEST" = "true" ]; then
+            cat <<EOF > /tmp/summary.md
           $summary
           <!--terraform-pr-github-run-id:$GITHUB_RUN_ID-->
           <!--terraform-pr-summary-->
@@ -487,12 +513,26 @@ jobs:
 
           _Time: ${timestamp}, commit: ${short_sha}_
           EOF
+          else
+            cat <<EOF > /tmp/summary.md
+          $summary
+
+          _Time: ${timestamp}, commit: ${short_sha}_
+          EOF
+          fi
 
           echo "file=/tmp/summary.md" >> "$GITHUB_OUTPUT"
           echo "success=$success" >> "$GITHUB_OUTPUT"
           echo "has-changes=$has_changes" >> "$GITHUB_OUTPUT"
 
+      - name: Write to job summary
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          SUMMARY_FILE: ${{ steps.summary.outputs.file }}
+        run: cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Find Terraform summary comment
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: fc
         with:
@@ -501,6 +541,7 @@ jobs:
           body-includes: "<!--terraform-pr-summary-->"
 
       - name: Create or update Terraform plan comment
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
         with:
           issue-number: ${{ github.event.pull_request.number }}
