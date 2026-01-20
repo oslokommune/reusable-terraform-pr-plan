@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/oslokommune/reusable-terraform-pr-plan/compare/v1.0.1...v1.1.0) (2026-01-20)
+
+
+### Features
+
+* support running outside of PRs ([#2](https://github.com/oslokommune/reusable-terraform-pr-plan/issues/2)) ([b69056a](https://github.com/oslokommune/reusable-terraform-pr-plan/commit/b69056a97a3fe788725d12c176da4e8fa4790321))
+
 ## [1.0.1](https://github.com/oslokommune/reusable-terraform-pr-plan/compare/v1.0.0...v1.0.1) (2026-01-19)
 
 
