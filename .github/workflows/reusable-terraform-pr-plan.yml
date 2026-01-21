@@ -232,6 +232,13 @@ jobs:
         working-directory: ${{ matrix.stack }}
         run: ls -lah; echo "TERRAFORM_VERSION=$(grep required_version *.tf | sed -E 's/[^"]+"([^"]+)"+/\1/')" >> "$GITHUB_OUTPUT"
 
+      - name: Extract template versions
+        id: template-version
+        run: |
+          python3 scripts/extract_template_versions.py \
+            --stack-dir "${{ matrix.stack }}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
@@ -393,6 +400,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           HAS_CHANGES: ${{ steps.plan-summary.outputs.result != 'No changes' }}
           SUMMARY: ${{ steps.plan-summary.outputs.result }}
+          TEMPLATE_VERSION: ${{ steps.template-version.outputs.result }}
           # Prefer comment URL for PRs, fall back to job URL
           PLAN_URL: >-
             ${{
@@ -402,20 +410,14 @@ jobs:
             }}
         id: job-summary
         run: |
-          summary="$(jq --compact-output --null-input \
-            --arg stack "$STACK" \
-            --argjson has_changes "$HAS_CHANGES" \
-            --arg job_status "$JOB_STATUS" \
-            --arg summary "$SUMMARY" \
-            --arg planUrl "$PLAN_URL" \
-            '{stack: $stack, hasChanges: $has_changes, jobStatus: $job_status, summary: $summary, planUrl: $planUrl}'
-          )"
-
-          artifact_name="summary-$(echo "$STACK" | sed 's/[^a-zA-Z0-9-]/-/g' | sed 's/--/-/g')"
-          job_summary_file="/tmp/$artifact_name.json"
-          echo "$summary" > "$job_summary_file"
-          echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
-          echo "file=$job_summary_file" >> "$GITHUB_OUTPUT"
+          python3 scripts/write_job_summary.py \
+            --stack "$STACK" \
+            --job-status "$JOB_STATUS" \
+            --has-changes "$HAS_CHANGES" \
+            --summary "$SUMMARY" \
+            --template-version "$TEMPLATE_VERSION" \
+            --plan-url "$PLAN_URL" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Store job summary as artifact
         if: ${{ always() }}
@@ -454,76 +456,14 @@ jobs:
           IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         id: summary
         run: |
-          timestamp=$(date +"%a %d. %b %T")
-          short_sha="$(echo "$COMMIT_SHA" | cut -c-8)"
-          stack_total=$(echo "${STACKS:-[]}" | jq 'length')
-          stack_word="stacks"
-          if [ "$stack_total" -eq 1 ]; then
-            stack_word="stack"
-          fi
-          summary="## Summary (${stack_total} $stack_word)"
-
-          create_table="false"
-          for f in summaries/*.json; do
-            [ -e "$f" ] && create_table="true" && break
-          done
-
-          if [ "$create_table" = "true" ]; then
-            summary="$(printf "%s\n%s\n" "$summary" "| Status | Stack | Details |")"
-            summary="$(printf "%s\n%s\n" "$summary" "|:---:|------------|------------|")"
-          fi
-
-          success="true"
-          has_changes="false"
-
-          for summary_file in summaries/*.json; do
-            emoji="❌"
-            stack="$(jq -r -e '.stack' "$summary_file")"
-            plan_url="$(jq -r '.planUrl' "$summary_file")"
-            plan_summary="$(jq -r -e '.summary' "$summary_file")"
-
-            if "$(jq -e '.jobStatus == "success"' "$summary_file")"; then
-              emoji="🟩"
-              if "$(jq -e '.hasChanges' "$summary_file")"; then
-                emoji="🟧"
-                has_changes="true"
-              fi
-            else
-              plan_summary="Plan failed"
-              success="false"
-            fi
-
-            if [ "$plan_url" != "" ]; then
-              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "[\`$stack\`]($plan_url)" "$plan_summary")"
-            else
-              summary="$(printf "%s\n|%s|%s|%s|\n" "$summary" "$emoji" "\`$stack\`" "$plan_summary")"
-            fi
-          done
-
-          # Build PR-specific content
-          if [ "$IS_PULL_REQUEST" = "true" ]; then
-            cat <<EOF > /tmp/summary.md
-          $summary
-          <!--terraform-pr-github-run-id:$GITHUB_RUN_ID-->
-          <!--terraform-pr-summary-->
-
-          ---
-
-          - [ ] Check this box to recreate plans <!--terraform-pr-recreate-->
-
-          _Time: ${timestamp}, commit: ${short_sha}_
-          EOF
-          else
-            cat <<EOF > /tmp/summary.md
-          $summary
-
-          _Time: ${timestamp}, commit: ${short_sha}_
-          EOF
-          fi
-
-          echo "file=/tmp/summary.md" >> "$GITHUB_OUTPUT"
-          echo "success=$success" >> "$GITHUB_OUTPUT"
-          echo "has-changes=$has_changes" >> "$GITHUB_OUTPUT"
+          python3 scripts/build_summary.py \
+            --summaries-dir summaries \
+            --stacks-json "${STACKS:-[]}" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --commit-sha "$COMMIT_SHA" \
+            --is-pull-request "$IS_PULL_REQUEST" \
+            --output-file /tmp/summary.md \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Write to job summary
         if: ${{ github.event_name != 'pull_request' }}
