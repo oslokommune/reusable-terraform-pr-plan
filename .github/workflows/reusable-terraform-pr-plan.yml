@@ -431,7 +431,12 @@ jobs:
       - determine-changed-stacks
       - plan
       - create-summary-comment
-    if: ${{ always() && needs.determine-changed-stacks.result == 'success' }}
+    if: >-
+      ${{
+        always()
+        && needs.determine-changed-stacks.result == 'success'
+        && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0]
+      }}
     permissions:
       pull-requests: write
     runs-on: ubuntu-24.04
@@ -446,24 +451,7 @@ jobs:
           pattern: summary-*
           merge-multiple: true
 
-      - name: Check if summaries exist
-        id: check-summaries
-        run: |
-          if [ -d summaries ] && [ -n "$(ls -A summaries/*.json 2>/dev/null)" ]; then
-            echo "has-summaries=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has-summaries=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Write no summaries message
-        if: steps.check-summaries.outputs.has-summaries == 'false'
-        run: |
-          echo "## Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "No summaries found - no stacks were planned" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Build summary
-        if: steps.check-summaries.outputs.has-summaries == 'true'
         env:
           STACKS: ${{ needs.determine-changed-stacks.outputs.all-stacks }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -543,13 +531,13 @@ jobs:
           echo "has-changes=$has_changes" >> "$GITHUB_OUTPUT"
 
       - name: Write to job summary
-        if: ${{ github.event_name != 'pull_request' && steps.check-summaries.outputs.has-summaries == 'true' }}
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           SUMMARY_FILE: ${{ steps.summary.outputs.file }}
         run: cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Find Terraform summary comment
-        if: ${{ github.event_name == 'pull_request' && steps.check-summaries.outputs.has-summaries == 'true' }}
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: fc
         with:
@@ -558,7 +546,7 @@ jobs:
           body-includes: "<!--terraform-pr-summary-->"
 
       - name: Create or update Terraform plan comment
-        if: ${{ github.event_name == 'pull_request' && steps.check-summaries.outputs.has-summaries == 'true' }}
+        if: ${{ github.event_name == 'pull_request' }}
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
         with:
           issue-number: ${{ github.event.pull_request.number }}
