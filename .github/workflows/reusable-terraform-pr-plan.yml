@@ -553,3 +553,21 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           body-file: ${{ steps.summary.outputs.file }}
           edit-mode: replace
+
+  no-stacks-found:
+    name: No stacks found
+    needs:
+      - determine-changed-stacks
+    if: >-
+      ${{
+        always()
+        && needs.determine-changed-stacks.result == 'success'
+        && !fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0]
+      }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build summary when no stacks found
+        run: |
+          echo "## Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "No Terraform stacks were found to plan." >> "$GITHUB_STEP_SUMMARY"
