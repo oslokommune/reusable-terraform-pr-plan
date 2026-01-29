@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/oslokommune/reusable-terraform-pr-plan/compare/v1.1.0...v1.2.0) (2026-01-29)
+
+
+### Features
+
+* add summary output when no stacks are found ([093dc23](https://github.com/oslokommune/reusable-terraform-pr-plan/commit/093dc2302ece64e7dd55331714e14946279fd635))
+
+
+### Bug Fixes
+
+* check if there exists any summaries before trying to access non-existing directory ([223dd1b](https://github.com/oslokommune/reusable-terraform-pr-plan/commit/223dd1bc3ea5cabfcab10b2039f92e7e7f02d62a))
+* check if there exists any summaries before trying to access non-existing directory ([72f5f3a](https://github.com/oslokommune/reusable-terraform-pr-plan/commit/72f5f3ad0f0d5f5121c3f60eeac85879ca38b7a2))
+
 ## [1.1.0](https://github.com/oslokommune/reusable-terraform-pr-plan/compare/v1.0.1...v1.1.0) (2026-01-20)
 
 
