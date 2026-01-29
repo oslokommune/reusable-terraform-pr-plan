@@ -93,6 +93,11 @@ jobs:
           selected-stacks: ${{ inputs.selected-stacks }}
           ignored-stacks: ${{ inputs.ignored-stacks }}
 
+      - name: Warn on no stacks found
+        if: ${{ !fromJSON(steps.determine.outputs.all-stacks)[0] }}
+        run: |
+          echo "::warning title=Determine stacks::No stacks found that match the filters"
+
   create-summary-comment:
     if: >-
       ${{
@@ -431,7 +436,12 @@ jobs:
       - determine-changed-stacks
       - plan
       - create-summary-comment
-    if: ${{ always() && needs.determine-changed-stacks.result == 'success' }}
+    if: >-
+      ${{
+        always()
+        && needs.determine-changed-stacks.result == 'success'
+        && fromJSON(needs.determine-changed-stacks.outputs.all-stacks)[0]
+      }}
     permissions:
       pull-requests: write
     runs-on: ubuntu-24.04
