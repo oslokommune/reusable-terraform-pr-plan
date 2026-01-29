@@ -93,6 +93,10 @@ jobs:
           selected-stacks: ${{ inputs.selected-stacks }}
           ignored-stacks: ${{ inputs.ignored-stacks }}
 
+      - name: Warn on no stacks found
+        if: ${{ !fromJSON(steps.determine.outputs.all-stacks)[0] }}
+        run: |
+          echo "::warning title=Determine stacks::No stacks found that match the filters"
   create-summary-comment:
     if: >-
       ${{
