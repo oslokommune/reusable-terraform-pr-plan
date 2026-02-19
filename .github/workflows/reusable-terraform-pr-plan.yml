@@ -25,7 +25,7 @@ on:
       pr-automerge-when:
         type: string
         default: "no-changes"
-        description: "Plan criteria for adding the automerge label (success is always required): 'no-changes' (default) also requires no changes, 'any' allows changes."
+        description: "Plan criteria for adding the automerge label (success is always required): 'no-changes' (default) also requires no changes, 'any-changes' allows changes."
         required: false
     secrets:
       ssh-private-key:
@@ -592,7 +592,7 @@ jobs:
               inputs.pr-automerge
               && needs.summarize.outputs.success == 'true'
               && (
-                inputs.pr-automerge-when == 'any'
+                inputs.pr-automerge-when == 'any-changes'
                 || needs.summarize.outputs.has-changes == 'false'
               )
             }}
