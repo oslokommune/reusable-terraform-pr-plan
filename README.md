@@ -50,7 +50,7 @@ jobs:
 
 ### With automerge
 
-The `pr-automerge` input expression determines whether to add or remove the `automerge` label, which will be picked up by Renocate later on to perform the actual merge. The example below enables automerge for Renovate PRs that target a dev environment as long as there are no major updates and all Terraform plans are successful.
+The `pr-automerge` input expression determines whether to add or remove the `automerge` label, which will be picked up by Renovate later on to perform the actual merge. The example below enables automerge for Renovate PRs that target a dev environment as long as there are no major updates and all Terraform plans are successful.
 
 ```yaml
 name: "Terraform PR"
