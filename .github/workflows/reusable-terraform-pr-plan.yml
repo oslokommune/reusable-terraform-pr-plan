@@ -596,46 +596,40 @@ jobs:
           HAS_MINOR_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'Minor update ✨') }}
           HAS_PATCH_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'Patch update 🔧') }}
         run: |
-          # Automerge must be enabled and all plans must have succeeded
-          if [ "$PR_AUTOMERGE" != "true" ] || [ "$SUCCESS" != "true" ]; then
-            exit 0
-          fi
-
-          if [ "$HAS_MAJOR_UPDATE" != "true" ] && [ "$HAS_MINOR_UPDATE" != "true" ] && [ "$HAS_PATCH_UPDATE" != "true" ]; then
-            echo "::warning::Could not determine update type from PR labels, skipping automerge"
-            exit 0
-          fi
-
           automerge="false"
 
-          for type in major minor patch; do
-            case "$type" in
-              major) has_label="$HAS_MAJOR_UPDATE" ;;
-              minor) has_label="$HAS_MINOR_UPDATE" ;;
-              patch) has_label="$HAS_PATCH_UPDATE" ;;
-            esac
+          # Evaluate rules only if automerge is enabled and plans succeeded
+          if [ "$PR_AUTOMERGE" = "true" ] && [ "$SUCCESS" = "true" ]; then
+            for type in major minor patch; do
+              case "$type" in
+                major) has_label="$HAS_MAJOR_UPDATE" ;;
+                minor) has_label="$HAS_MINOR_UPDATE" ;;
+                patch) has_label="$HAS_PATCH_UPDATE" ;;
+              esac
 
-            if [ "$has_label" = "true" ]; then
-              # We check if user has defined a rule for the current update type. Default rule is 'no-changes'.
-              rule="$(echo "$PR_AUTOMERGE_RULES" | jq -r --arg type "$type" '.[$type] // "no-changes"')"
+              # We only evaluate rules if the PR contains a matching update
+              if [ "$has_label" = "true" ]; then
+                # Check if user has defined a rule for the current update type. Default rule is 'no-changes'.
+                rule="$(echo "$PR_AUTOMERGE_RULES" | jq -r --arg type "$type" '.[$type] // "no-changes"')"
 
-              # Rule 'any-changes' allows automerge regardless of plan changes
-              if [ "$rule" = "any-changes" ]; then
-                automerge="true"
-              # Rule 'no-changes' allows automerge only if plans have no changes
-              elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" != "true" ]; then
-                automerge="true"
-              # Rule 'never' blocks automerge for this update type
-              elif [ "$rule" = "never" ]; then
-                automerge="false"
-                break
-              # Rule 'no-changes' with changes blocks automerge
-              elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" = "true" ]; then
-                automerge="false"
-                break
+                # Rule 'any-changes' allows automerge regardless of plan changes
+                if [ "$rule" = "any-changes" ]; then
+                  automerge="true"
+                # Rule 'no-changes' allows automerge only if plans have no changes
+                elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" != "true" ]; then
+                  automerge="true"
+                # Rule 'never' blocks automerge for this update type
+                elif [ "$rule" = "never" ]; then
+                  automerge="false"
+                  break
+                # Rule 'no-changes' with changes blocks automerge
+                elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" = "true" ]; then
+                  automerge="false"
+                  break
+                fi
               fi
-            fi
-          done
+            done
+          fi
 
           # Label needs to exist in repository before trying to attach it to a PR
           gh label create --force --color "0E8A16" --description "Renovate will merge PRs with this label automatically" "automerge"
