@@ -50,7 +50,14 @@ jobs:
 
 ### With automerge
 
-The `pr-automerge` input expression determines whether to add or remove the `automerge` label, which will be picked up by Renovate later on to perform the actual merge. The example below enables automerge for Renovate PRs that target a dev environment as long as there are no major updates and all Terraform plans are successful.
+The `pr-automerge` input controls whether the `automerge` label is added, which Renovate picks up to perform the actual merge.
+
+The `pr-automerge-rules` input maps update types (major/minor/patch) to rules:
+- `never` - never automerge this update type
+- `no-changes` - only automerge if plans have no changes (default)
+- `any-changes` - automerge regardless of plan changes
+
+The example below enables automerge for Renovate PRs targeting dev, allowing changes for minor/patch updates but requiring no changes for major updates.
 
 ```yaml
 name: "Terraform PR"
@@ -64,12 +71,8 @@ jobs:
   plan:
     uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v1
     with:
-      pr-automerge: >-
-        ${{
-          contains(github.event.pull_request.labels.*.name, 'env/dev')
-          && !contains(github.event.pull_request.labels.*.name, 'Major update ⚠️')
-        }}
-      pr-automerge-when: any-changes # NOTE: Set this to 'no-changes' to only allow automerge if all plans have no changes
+      pr-automerge: ${{ contains(github.event.pull_request.labels.*.name, 'env/dev') }}
+      pr-automerge-rules: '{"minor": "any-changes", "patch": "any-changes"}'
     secrets:
       ssh-private-key: ${{ secrets.GOLDEN_PATH_IAC_PRIVATE_DEPLOY_KEY }}
 ```
