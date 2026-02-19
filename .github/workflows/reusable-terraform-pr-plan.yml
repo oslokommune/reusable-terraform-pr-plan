@@ -17,6 +17,16 @@ on:
         default: ""
         description: "Comma/newline-delimited list of stack patterns to always ignore."
         required: false
+      pr-automerge:
+        type: boolean
+        default: false
+        description: "Whether to add an automerge label to the PR. Use an expression to control which PRs are eligible (e.g., only Renovate PRs)."
+        required: false
+      pr-automerge-when:
+        type: string
+        default: "no-changes"
+        description: "Plan criteria for adding the automerge label (success is always required): 'no-changes' (default) also requires no changes, 'any' allows changes."
+        required: false
     secrets:
       ssh-private-key:
         description: "A deploy key that grants read access to Terraform modules in golden-path-iac"
@@ -558,3 +568,41 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           body-file: ${{ steps.summary.outputs.file }}
           edit-mode: replace
+
+  automerge:
+    name: Automerge
+    if: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.user.login == 'kjoremiljo-renovate[bot]'
+        && contains(github.event.pull_request.labels.*.name, 'Golden Path 👑')
+      }}
+    needs:
+      - summarize
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set automerge label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTOMERGE: >-
+            ${{
+              inputs.pr-automerge
+              && needs.summarize.outputs.success == 'true'
+              && (
+                inputs.pr-automerge-when == 'any'
+                || needs.summarize.outputs.has-changes == 'false'
+              )
+            }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Label needs to exist in repository before trying to attach it to a PR
+          gh label create --force --color "0E8A16" --description "Renovate will merge PRs with this label automatically" "automerge"
+          if [ "$AUTOMERGE" = "true" ]; then
+            gh pr edit "$PR_NUMBER" --add-label "automerge"
+          else
+            # If we can't automerge, remove any existing (and outdated) label
+            gh pr edit "$PR_NUMBER" --remove-label "automerge"
+          fi
