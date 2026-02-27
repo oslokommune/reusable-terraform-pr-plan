@@ -595,8 +595,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge/evaluate_automerge.py?ref=feat/commit-body-automerge" \
-            --jq '.content' | base64 -d > /tmp/evaluate_automerge.py
+          base_url="repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge"
+          ref="feat/commit-body-automerge"
+          mkdir -p /tmp/evaluate-automerge
+          gh api "$base_url/evaluate_automerge.py?ref=$ref" --jq '.content' | base64 -d > /tmp/evaluate-automerge/evaluate_automerge.py
+          gh api "$base_url/pyproject.toml?ref=$ref" --jq '.content' | base64 -d > /tmp/evaluate-automerge/pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
 
       # Evaluate whether the PR is safe to automerge by parsing structured upgrade
       # info from the commit body and checking it against the caller's rules and
@@ -616,7 +622,7 @@ jobs:
           if [ "$PR_AUTOMERGE" = "true" ]; then
             # We fetch the commit message via gh api to avoid needing a full checkout.
             commit_body="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
-            automerge="$(python3 /tmp/evaluate_automerge.py --commit-body "$commit_body" --rules "$RULES" --stack-changes "$STACK_CHANGES" --success "$SUCCESS")"
+            automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-body "$commit_body" --rules "$RULES" --stack-changes "$STACK_CHANGES" --success "$SUCCESS")"
           fi
           echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
 
