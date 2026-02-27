@@ -605,7 +605,7 @@ jobs:
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
 
       # Evaluate whether the PR is safe to automerge by parsing structured upgrade
-      # info from the commit body and checking it against the caller's rules and
+      # info from the commit message and checking it against the caller's rules and
       # per-stack Terraform plan results.
       - name: Evaluate automerge
         id: evaluate
@@ -619,10 +619,10 @@ jobs:
           PR_AUTOMERGE: ${{ inputs.pr-automerge }}
         run: |
           automerge="false"
-          if [ "$PR_AUTOMERGE" = "true" ]; then
+          if [ "$PR_AUTOMERGE" = "true" ] && [ "$SUCCESS" = "true" ]; then
             # We fetch the commit message via gh api to avoid needing a full checkout.
-            commit_body="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
-            automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-body "$commit_body" --rules "$RULES" --stack-changes "$STACK_CHANGES" --success "$SUCCESS")"
+            commit_message="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
+            automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-message "$commit_message" --rules "$RULES" --stack-changes "$STACK_CHANGES")"
           fi
           echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
 

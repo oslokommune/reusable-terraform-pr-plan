@@ -1,10 +1,10 @@
-"""Evaluate whether a Renovate PR should be automerged.
+"""Evaluate whether Renovate upgrades to golden-path-boilerplate are safe to automerge.
 
-Parses structured upgrade info from the commit body and evaluates it against
-per-stack automerge rules and Terraform plan results.
+Parses structured upgrade info from the commit message and evaluates it against
+automerge rules and Terraform plan results.
 
 Usage:
-  python3 evaluate_automerge.py --commit-body <str> --rules <json> --stack-changes <json> --success true|false
+  python3 evaluate_automerge.py --commit-message <str> --rules <json> --stack-changes <json>
 
 Output: prints "true" or "false" to stdout.
 """
@@ -14,28 +14,40 @@ import json
 import re
 import sys
 from pathlib import PurePosixPath
-
-MARKER_PATTERN = re.compile(
-    r"<!--golden-path-renovate-summary:\[(.+?)\]-->"
-)
-
-ALLOWED_PACKAGE = "oslokommune/golden-path-boilerplate"
-VALID_POLICIES = {"never", "no-changes", "any-changes"}
-DEFAULT_POLICY = "no-changes"
+from typing import NotRequired, TypedDict
 
 
-def parse_upgrades(commit_body: str) -> list[dict] | None:
-    """Extract the upgrades array from the commit body marker.
+class Upgrade(TypedDict):
+    packageName: str
+    packageFileDir: str
+    depName: str
+    updateType: str
+    currentValue: str
+    newValue: str
+
+
+class Rule(TypedDict):
+    pattern: str
+    major: NotRequired[str]
+    minor: NotRequired[str]
+    patch: NotRequired[str]
+
+
+def parse_upgrades(
+    commit_message: str,
+    marker: re.Pattern = re.compile(r"<!--golden-path-renovate-summary:\[(.+?)\]-->"),
+) -> list[Upgrade] | None:
+    """Extract the upgrades array from the commit message marker.
 
     Returns None if the marker is not found.
     """
-    match = MARKER_PATTERN.search(commit_body)
+    match = marker.search(commit_message)
     if not match:
         return None
     return json.loads(f"[{match.group(1)}]")
 
 
-def match_rule(package_file_dir: str, rules: list[dict]) -> dict | None:
+def match_rule(package_file_dir: str, rules: list[Rule]) -> Rule | None:
     """Find the first rule whose pattern matches the packageFileDir."""
     path = PurePosixPath(package_file_dir)
     for rule in rules:
@@ -45,21 +57,23 @@ def match_rule(package_file_dir: str, rules: list[dict]) -> dict | None:
 
 
 def evaluate_upgrade(
-    upgrade: dict,
-    rule: dict,
-    stack_changes: dict,
+    upgrade: Upgrade,
+    rule: Rule,
+    stack_changes: dict[str, bool],
+    default_policy: str = "no-changes",
+    valid_policies: frozenset[str] = frozenset({"never", "no-changes", "any-changes"}),
 ) -> bool:
     """Evaluate a single upgrade against its matched rule and plan result."""
     update_type = upgrade["updateType"]
-    policy = rule.get(update_type, DEFAULT_POLICY)
+    policy = rule.get(update_type, default_policy)
 
-    if policy not in VALID_POLICIES:
+    if policy not in valid_policies:
         print(
             f"Warning: unknown policy '{policy}' for update type "
-            f"'{update_type}', treating as '{DEFAULT_POLICY}'",
+            f"'{update_type}', treating as '{default_policy}'",
             file=sys.stderr,
         )
-        policy = DEFAULT_POLICY
+        policy = default_policy
 
     if policy == "never":
         return False
@@ -74,16 +88,13 @@ def evaluate_upgrade(
 
 
 def evaluate(
-    commit_body: str,
-    rules: list[dict],
-    stack_changes: dict,
-    success: bool,
+    commit_message: str,
+    rules: list[Rule],
+    stack_changes: dict[str, bool],
+    allowed_package: str = "oslokommune/golden-path-boilerplate",
 ) -> bool:
-    """Main evaluation: returns True if the PR should be automerged."""
-    if not success:
-        return False
-
-    upgrades = parse_upgrades(commit_body)
+    """Returns True if all upgrades in the commit are eligible for automerge."""
+    upgrades = parse_upgrades(commit_message)
     if upgrades is None:
         return False
 
@@ -91,7 +102,7 @@ def evaluate(
         return False
 
     for upgrade in upgrades:
-        if upgrade.get("packageName") != ALLOWED_PACKAGE:
+        if upgrade.get("packageName") != allowed_package:
             return False
 
         rule = match_rule(upgrade["packageFileDir"], rules)
@@ -105,17 +116,21 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Renovate PR automerge eligibility")
-    parser.add_argument("--commit-body", required=True, help="Full commit message body")
+    parser = argparse.ArgumentParser(
+        description="Evaluate whether golden-path-boilerplate upgrades are safe to automerge"
+    )
+    parser.add_argument("--commit-message", required=True, help="Full commit message")
     parser.add_argument("--rules", required=True, help="JSON array of automerge rules")
-    parser.add_argument("--stack-changes", required=True, help="JSON object mapping stack paths to booleans")
-    parser.add_argument("--success", required=True, choices=["true", "false"], help="Whether all Terraform plans succeeded")
+    parser.add_argument(
+        "--stack-changes",
+        required=True,
+        help="JSON object mapping stack paths to booleans",
+    )
     args = parser.parse_args()
 
     result = evaluate(
-        args.commit_body,
+        args.commit_message,
         json.loads(args.rules),
         json.loads(args.stack_changes),
-        args.success == "true",
     )
     print("true" if result else "false")
