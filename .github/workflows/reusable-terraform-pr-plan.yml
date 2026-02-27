@@ -589,16 +589,12 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-24.04
     steps:
-      # This is a reusable workflow, so the caller's repo is checked out — not ours.
-      # We fetch the evaluation script from our own repo at the same ref the caller
-      # invoked, using github.workflow_ref (which points to the called workflow).
+      # TODO: Temporary hardcoded ref for testing. Will be replaced by a composite action.
       - name: Download evaluation script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
-          ref="${WORKFLOW_REF##*@}"
-          gh api "repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge/evaluate_automerge.py?ref=$ref" \
+          gh api "repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge/evaluate_automerge.py?ref=feat/commit-body-automerge" \
             --jq '.content' | base64 -d > /tmp/evaluate_automerge.py
 
       # Evaluate whether the PR is safe to automerge by parsing structured upgrade
