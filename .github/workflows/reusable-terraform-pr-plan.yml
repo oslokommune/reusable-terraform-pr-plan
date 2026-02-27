@@ -20,7 +20,7 @@ on:
       pr-automerge:
         type: boolean
         default: false
-        description: "Whether to add an automerge label to the PR. Use an expression to control which PRs are eligible."
+        description: "Whether to evaluate Renovate PRs for automerge eligibility based on upgrade type and Terraform plan results."
         required: false
       pr-automerge-rules:
         type: string
@@ -590,23 +590,6 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-24.04
     steps:
-      # TODO: Temporary hardcoded ref for testing. Will be replaced by a composite action.
-      - name: Download evaluation script
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          base_url="repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge"
-          ref="feat/commit-body-automerge"
-          mkdir -p /tmp/evaluate-automerge
-          gh api "$base_url/evaluate_automerge.py?ref=$ref" --jq '.content' | base64 -d > /tmp/evaluate-automerge/evaluate_automerge.py
-          gh api "$base_url/pyproject.toml?ref=$ref" --jq '.content' | base64 -d > /tmp/evaluate-automerge/pyproject.toml
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-
-      # Evaluate whether the PR is safe to automerge by parsing structured upgrade
-      # info from the commit message and checking it against the caller's rules and
-      # per-stack Terraform plan results.
       - name: Evaluate automerge
         id: evaluate
         if: >-
@@ -614,18 +597,12 @@ jobs:
             inputs.pr-automerge
             && inputs.pr-automerge-rules != '[]'
             && needs.summarize.outputs.success == 'true'
+            && github.event.pull_request.commits == 1
           }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-          RULES: ${{ inputs.pr-automerge-rules }}
-          STACK_CHANGES: ${{ needs.summarize.outputs.stack-changes }}
-        run: |
-          # We fetch the commit message via gh api to avoid needing a full checkout.
-          commit_message="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
-          automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-message "$commit_message" --rules "$RULES" --stack-changes "$STACK_CHANGES")"
-          echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
+        uses: oslokommune/composite-actions/evaluate-automerge@1a10b16d9bfaa479fccf47e1c16d05c4f760a8a3 # feat/evaluate-automerge
+        with:
+          rules: ${{ inputs.pr-automerge-rules }}
+          stack-changes: ${{ needs.summarize.outputs.stack-changes }}
 
       - name: Set automerge label
         if: ${{ always() }}
