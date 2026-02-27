@@ -69,7 +69,7 @@ on:
 
 jobs:
   plan:
-    uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v2
+    uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v1
     with:
       pr-automerge: true
       pr-automerge-rules: |
