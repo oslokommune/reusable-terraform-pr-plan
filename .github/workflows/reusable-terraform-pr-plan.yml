@@ -508,7 +508,7 @@ jobs:
 
             if "$(jq -e '.jobStatus == "success"' "$summary_file")"; then
               emoji="🟩"
-              stack_has_changes="$(jq -e '.hasChanges' "$summary_file")"
+              stack_has_changes="$(jq -r '.hasChanges' "$summary_file")"
               stack_changes="$(echo "$stack_changes" | jq -c --arg stack "$stack" --argjson changes "$stack_has_changes" '. + {($stack): $changes}')"
               if "$stack_has_changes"; then
                 emoji="🟧"
@@ -624,6 +624,7 @@ jobs:
           echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
 
       - name: Set automerge label
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
