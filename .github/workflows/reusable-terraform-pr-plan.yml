@@ -592,6 +592,8 @@ jobs:
     steps:
       - name: Evaluate automerge
         id: evaluate
+        # We only do the automerge evaluation if the automerge functionality is enabled,
+        # rules are set, all Terraform plans succeeded, and the PR only contains one commit
         if: >-
           ${{
             inputs.pr-automerge
