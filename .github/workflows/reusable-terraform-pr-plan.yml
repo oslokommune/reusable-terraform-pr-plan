@@ -24,8 +24,8 @@ on:
         required: false
       pr-automerge-rules:
         type: string
-        default: "{}"
-        description: "Only used when pr-automerge is enabled. JSON object mapping update types (major/minor/patch) to: 'never', 'no-changes', or 'any-changes'. Unspecified types default to 'no-changes'."
+        default: "[]"
+        description: "Only used when pr-automerge is enabled. JSON array of rules with pattern matching and per-update-type policies. Each rule: {pattern, major?, minor?, patch?}. Policies: 'never', 'no-changes', 'any-changes'. First matching pattern wins. Unspecified types default to 'no-changes'."
         required: false
     secrets:
       ssh-private-key:
@@ -458,6 +458,7 @@ jobs:
     outputs:
       success: ${{ steps.summary.outputs.success == 'true' }}
       has-changes: ${{ steps.summary.outputs.has-changes == 'true' }}
+      stack-changes: ${{ steps.summary.outputs.stack-changes }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -495,6 +496,9 @@ jobs:
 
           success="true"
           has_changes="false"
+          # Per-stack change map, e.g. {"stacks/dev/app": true, "stacks/prod/app": false}.
+          # Used by automerge evaluation to check policies per stack.
+          stack_changes="{}"
 
           for summary_file in summaries/*.json; do
             emoji="❌"
@@ -504,7 +508,9 @@ jobs:
 
             if "$(jq -e '.jobStatus == "success"' "$summary_file")"; then
               emoji="🟩"
-              if "$(jq -e '.hasChanges' "$summary_file")"; then
+              stack_has_changes="$(jq -e '.hasChanges' "$summary_file")"
+              stack_changes="$(echo "$stack_changes" | jq -c --arg stack "$stack" --argjson changes "$stack_has_changes" '. + {($stack): $changes}')"
+              if "$stack_has_changes"; then
                 emoji="🟧"
                 has_changes="true"
               fi
@@ -544,6 +550,7 @@ jobs:
           echo "file=/tmp/summary.md" >> "$GITHUB_OUTPUT"
           echo "success=$success" >> "$GITHUB_OUTPUT"
           echo "has-changes=$has_changes" >> "$GITHUB_OUTPUT"
+          echo "stack-changes=$stack_changes" >> "$GITHUB_OUTPUT"
 
       - name: Write to job summary
         if: ${{ github.event_name != 'pull_request' }}
@@ -575,7 +582,6 @@ jobs:
       ${{
         github.event_name == 'pull_request'
         && github.event.pull_request.user.login == 'kjoremiljo-renovate[bot]'
-        && contains(github.event.pull_request.labels.*.name, 'Golden Path 👑')
       }}
     needs:
       - summarize
@@ -583,57 +589,50 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-24.04
     steps:
+      # This is a reusable workflow, so the caller's repo is checked out — not ours.
+      # We fetch the evaluation script from our own repo at the same ref the caller
+      # invoked, using github.workflow_ref (which points to the called workflow).
+      - name: Download evaluation script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          ref="${WORKFLOW_REF##*@}"
+          gh api "repos/oslokommune/reusable-terraform-pr-plan/contents/.github/workflows/helpers/evaluate-automerge/evaluate_automerge.py?ref=$ref" \
+            --jq '.content' | base64 -d > /tmp/evaluate_automerge.py
+
+      # Evaluate whether the PR is safe to automerge by parsing structured upgrade
+      # info from the commit body and checking it against the caller's rules and
+      # per-stack Terraform plan results.
+      - name: Evaluate automerge
+        id: evaluate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          RULES: ${{ inputs.pr-automerge-rules }}
+          STACK_CHANGES: ${{ needs.summarize.outputs.stack-changes }}
+          SUCCESS: ${{ needs.summarize.outputs.success }}
+          PR_AUTOMERGE: ${{ inputs.pr-automerge }}
+        run: |
+          automerge="false"
+          if [ "$PR_AUTOMERGE" = "true" ]; then
+            # We fetch the commit message via gh api to avoid needing a full checkout.
+            commit_body="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
+            automerge="$(python3 /tmp/evaluate_automerge.py --commit-body "$commit_body" --rules "$RULES" --stack-changes "$STACK_CHANGES" --success "$SUCCESS")"
+          fi
+          echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
+
       - name: Set automerge label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTOMERGE: ${{ inputs.pr-automerge }}
-          PR_AUTOMERGE_RULES: ${{ inputs.pr-automerge-rules }}
-          SUCCESS: ${{ needs.summarize.outputs.success }}
-          HAS_CHANGES: ${{ needs.summarize.outputs.has-changes }}
-          HAS_MAJOR_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'Major update ⚠️') }}
-          HAS_MINOR_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'Minor update ✨') }}
-          HAS_PATCH_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'Patch update 🔧') }}
+          AUTOMERGE: ${{ steps.evaluate.outputs.automerge }}
         run: |
-          automerge="false"
-
-          # Evaluate rules only if automerge is enabled and plans succeeded
-          if [ "$PR_AUTOMERGE" = "true" ] && [ "$SUCCESS" = "true" ]; then
-            for type in major minor patch; do
-              case "$type" in
-                major) has_label="$HAS_MAJOR_UPDATE" ;;
-                minor) has_label="$HAS_MINOR_UPDATE" ;;
-                patch) has_label="$HAS_PATCH_UPDATE" ;;
-              esac
-
-              # We only evaluate rules if the PR contains a matching update
-              if [ "$has_label" = "true" ]; then
-                # Check if user has defined a rule for the current update type. Default rule is 'no-changes'.
-                rule="$(echo "$PR_AUTOMERGE_RULES" | jq -r --arg type "$type" '.[$type] // "no-changes"')"
-
-                # Rule 'any-changes' allows automerge regardless of plan changes
-                if [ "$rule" = "any-changes" ]; then
-                  automerge="true"
-                # Rule 'no-changes' allows automerge only if plans have no changes
-                elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" != "true" ]; then
-                  automerge="true"
-                # Rule 'never' blocks automerge for this update type
-                elif [ "$rule" = "never" ]; then
-                  automerge="false"
-                  break
-                # Rule 'no-changes' with changes blocks automerge
-                elif [ "$rule" = "no-changes" ] && [ "$HAS_CHANGES" = "true" ]; then
-                  automerge="false"
-                  break
-                fi
-              fi
-            done
-          fi
-
           # Label needs to exist in repository before trying to attach it to a PR
           gh label create --force --color "0E8A16" --description "Renovate will merge PRs with this label automatically" "automerge"
-          if [ "$automerge" = "true" ]; then
+          if [ "$AUTOMERGE" = "true" ]; then
             gh pr edit "$PR_NUMBER" --add-label "automerge"
           else
             # If we can't automerge, remove any existing (and outdated) label
