@@ -90,6 +90,37 @@ class TestPatternMatching(unittest.TestCase):
         commit_body = _make_commit_body(upgrades)
         self.assertTrue(ea.evaluate(commit_body, rules, {}, success=True))
 
+    def test_prod_at_root(self):
+        """prod/my-stack matches **/prod/**."""
+        rules = [{"pattern": "**/prod/**", "patch": "any-changes"}]
+        upgrades = [_upgrade(package_file_dir="prod/my-stack", update_type="patch")]
+        commit_body = _make_commit_body(upgrades)
+        self.assertTrue(ea.evaluate(commit_body, rules, {}, success=True))
+
+    def test_environments_prod(self):
+        rules = [{"pattern": "**/prod/**", "patch": "any-changes"}]
+        upgrades = [_upgrade(package_file_dir="environments/prod/app", update_type="patch")]
+        commit_body = _make_commit_body(upgrades)
+        self.assertTrue(ea.evaluate(commit_body, rules, {}, success=True))
+
+    def test_terraform_prod(self):
+        rules = [{"pattern": "**/prod/**", "patch": "any-changes"}]
+        upgrades = [_upgrade(package_file_dir="terraform/prod/dns", update_type="patch")]
+        commit_body = _make_commit_body(upgrades)
+        self.assertTrue(ea.evaluate(commit_body, rules, {}, success=True))
+
+    def test_deeply_nested_prod(self):
+        rules = [{"pattern": "**/prod/**", "patch": "any-changes"}]
+        upgrades = [_upgrade(package_file_dir="a/b/prod/c/d", update_type="patch")]
+        commit_body = _make_commit_body(upgrades)
+        self.assertTrue(ea.evaluate(commit_body, rules, {}, success=True))
+
+    def test_dev_does_not_match_prod_pattern(self):
+        rules = [{"pattern": "**/prod/**", "patch": "any-changes"}]
+        upgrades = [_upgrade(package_file_dir="stacks/dev/app", update_type="patch")]
+        commit_body = _make_commit_body(upgrades)
+        self.assertFalse(ea.evaluate(commit_body, rules, {}, success=True))
+
 
 class TestPolicies(unittest.TestCase):
     def test_never_always_rejects(self):

@@ -10,10 +10,10 @@ Output: prints "true" or "false" to stdout.
 """
 
 import argparse
-import fnmatch
 import json
 import re
 import sys
+from pathlib import PurePosixPath
 
 MARKER_PATTERN = re.compile(
     r"<!--golden-path-renovate-summary:\[(.+?)\]-->"
@@ -37,8 +37,9 @@ def parse_upgrades(commit_body: str) -> list[dict] | None:
 
 def match_rule(package_file_dir: str, rules: list[dict]) -> dict | None:
     """Find the first rule whose pattern matches the packageFileDir."""
+    path = PurePosixPath(package_file_dir)
     for rule in rules:
-        if fnmatch.fnmatch(package_file_dir, rule["pattern"]):
+        if path.full_match(rule["pattern"]):
             return rule
     return None
 
