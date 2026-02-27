@@ -599,7 +599,7 @@ jobs:
             && needs.summarize.outputs.success == 'true'
             && github.event.pull_request.commits == 1
           }}
-        uses: oslokommune/composite-actions/evaluate-automerge@d985e481388b94fb3f70c7c8054aff10f5928766 # feat/evaluate-automerge
+        uses: oslokommune/composite-actions/evaluate-automerge@07e89c277b73d94af41fa16e55dffe22ce2b35c0 # feat/evaluate-automerge
         with:
           rules: ${{ inputs.pr-automerge-rules }}
           stack-changes: ${{ needs.summarize.outputs.stack-changes }}
