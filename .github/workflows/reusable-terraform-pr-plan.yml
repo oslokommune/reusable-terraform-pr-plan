@@ -609,21 +609,22 @@ jobs:
       # per-stack Terraform plan results.
       - name: Evaluate automerge
         id: evaluate
+        if: >-
+          ${{
+            inputs.pr-automerge
+            && inputs.pr-automerge-rules != '[]'
+            && needs.summarize.outputs.success == 'true'
+          }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           RULES: ${{ inputs.pr-automerge-rules }}
           STACK_CHANGES: ${{ needs.summarize.outputs.stack-changes }}
-          SUCCESS: ${{ needs.summarize.outputs.success }}
-          PR_AUTOMERGE: ${{ inputs.pr-automerge }}
         run: |
-          automerge="false"
-          if [ "$PR_AUTOMERGE" = "true" ] && [ "$SUCCESS" = "true" ]; then
-            # We fetch the commit message via gh api to avoid needing a full checkout.
-            commit_message="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
-            automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-message "$commit_message" --rules "$RULES" --stack-changes "$STACK_CHANGES")"
-          fi
+          # We fetch the commit message via gh api to avoid needing a full checkout.
+          commit_message="$(gh api "repos/$GH_REPO/commits/$COMMIT_SHA" --jq '.commit.message')"
+          automerge="$(uv run --project /tmp/evaluate-automerge /tmp/evaluate-automerge/evaluate_automerge.py --commit-message "$commit_message" --rules "$RULES" --stack-changes "$STACK_CHANGES")"
           echo "automerge=$automerge" >> "$GITHUB_OUTPUT"
 
       - name: Set automerge label
