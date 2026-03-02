@@ -81,7 +81,6 @@ jobs:
           fi
 
   determine-changed-stacks:
-    # Avoid triggering on issue comment. Issue comments trigger a re-run, and we do not need to detect changed stacks.
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
