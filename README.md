@@ -1,5 +1,9 @@
 # reusable-terraform-pr-plan
 
+> ⚠️ **OBS: Dette repoet skal omdøpes til `reusable-terraform-pr`.**
+> Se [#33](https://github.com/oslokommune/reusable-terraform-pr-plan/issues/33) for utrullingsplan.
+> Ikke push nye endringer hit før omdøpningen er gjennomført.
+
 Reusable GitHub Actions workflow for running Terraform plan on pull requests.
 
 ## Usage
