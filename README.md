@@ -1,4 +1,4 @@
-# reusable-terraform-pr-plan
+# reusable-terraform-pr
 
 > ⚠️ **OBS: Utdatert repo. Bruk [`reusable-terraform-pr`](https://github.com/oslokommune/reusable-terraform-pr) i stedet.**
 
@@ -18,7 +18,7 @@ on:
 
 jobs:
   plan:
-    uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v1
+    uses: oslokommune/reusable-terraform-pr/.github/workflows/reusable-terraform-pr.yml@v1
     secrets:
       ssh-private-key: ${{ secrets.GOLDEN_PATH_IAC_PRIVATE_DEPLOY_KEY }}
 ```
@@ -43,7 +43,7 @@ on:
 
 jobs:
   plan:
-    uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v1
+    uses: oslokommune/reusable-terraform-pr/.github/workflows/reusable-terraform-pr.yml@v1
     with:
       selected-stacks: ${{ inputs.selected-stacks }}
     secrets:
@@ -71,7 +71,7 @@ on:
 
 jobs:
   plan:
-    uses: oslokommune/reusable-terraform-pr-plan/.github/workflows/reusable-terraform-pr-plan.yml@v1
+    uses: oslokommune/reusable-terraform-pr/.github/workflows/reusable-terraform-pr.yml@v1
     with:
       pr-automerge: true
       pr-automerge-rules: |
